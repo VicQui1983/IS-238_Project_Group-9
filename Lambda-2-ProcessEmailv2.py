@@ -2,7 +2,7 @@ import boto3
 import email
 import json
 import os
-import requests 
+import requests
 import urllib.parse
 from email.policy import default
 from bs4 import BeautifulSoup
@@ -69,17 +69,55 @@ def parse_email_body(msg):
     
     return "No text content found in email."
 
-
 def get_summary(subject, body, api_key):
     """Calls the OpenAI API for summarization."""
-    print("TODO: Calling AI API...")
-    return "This is a placeholder summary. The real AI call is pending."
 
+    endpoint = "https://openai.is238.upou.io/v1/chat/completions"
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": "You are an email summarizer. Summarize the following email text clearly and concisely."},
+            {"role": "user", "content": f"Subject: {subject}\n\nBody: {body}"}
+        ]
+    }
+    
+    try:
+        response = requests.post(endpoint, headers=headers, json=payload, timeout=20)
+        
+        if response.status_code == 200:
+            summary = response.json()['choices'][0]['message']['content']
+            return summary
+        else:
+            print(f"OpenAI API Error: {response.status_code} - {response.text}")
+            return "Error from AI: Could not get summary."
+            
+    except requests.exceptions.Timeout:
+        print("OpenAI request timed out.")
+        return "Error: The AI summarizer timed out."
+    except Exception as e:
+        print(f"OpenAI request error: {e}")
+        return "Error: Failed to connect to AI summarizer."
 
 def send_telegram_message(chat_id, text, reply_markup, bot_token):
     """Sends a formatted message to a Telegram user."""
-    print(f"TODO: Sending message to chat_id {chat_id}")
-    pass
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        'chat_id': chat_id,
+        'text': text,
+        'reply_markup': json.dumps(reply_markup),
+        'parse_mode': 'Markdown'
+    }
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code != 200:
+            print(f"Error sending to Telegram: {response.text}")
+    except Exception as e:
+        print(f"Telegram request error: {e}")
 
 
 def lambda_handler(event, context):
@@ -117,10 +155,30 @@ def lambda_handler(event, context):
         
         summary = get_summary(subject, body_text, openai_key)
         
-        print("TODO: Add S3 pre-signed URL generation.")
-        message_text = f"Placeholder message for {to_address}: {summary}"
-        keyboard = {}
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket_name, 'Key': object_key},
+            ExpiresIn=604800
+        )
         
+        message_text = (
+            f"📬 *New Email Summary*\n\n"
+            f"*From:* `{msg.get('From', 'Unknown Sender')}`\n"
+            f"*Subject:* `{subject}`\n\n"
+            f"--- *Summary* ---\n{summary}"
+        )
+        
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "⬇️ Download Raw Email (7 days)", "url": presigned_url}
+                ],
+                [
+                    {"text": "🚫 Deactivate This Address", "callback_data": f"deactivate:{to_address}"}
+                ]
+            ]
+        }
+
         send_telegram_message(chat_id, message_text, keyboard, bot_token)
         
         return {'statusCode': 200, 'body': 'Email processed and sent.'}
